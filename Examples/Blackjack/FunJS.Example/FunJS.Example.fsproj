@@ -39,9 +39,6 @@
     <Reference Include="FunJS">
       <HintPath>..\..\..\FunJS.TypeScript\bin\Debug\FunJS.dll</HintPath>
     </Reference>
-    <Reference Include="FunJS.TypeScript">
-      <HintPath>..\..\..\FunJS.TypeScript\bin\Debug\FunJS.TypeScript.dll</HintPath>
-    </Reference>
     <Reference Include="mscorlib" />
     <Reference Include="FSharp.Core, Version=4.3.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
       <Private>True</Private>
@@ -51,6 +48,7 @@
     <Reference Include="System.Numerics" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Events.fs" />
     <Compile Include="Program.fs" />
     <None Include="App.config" />
     <None Include="index.html">

@@ -13,6 +13,7 @@ open System
 
 module TypeGenerator =
 
+   // Tuple from list
    let makeTupleType ts =
       let tupleType =
          match ts |> List.length with
@@ -24,7 +25,9 @@ module TypeGenerator =
          | 7 -> typedefof<_ * _ * _ * _ * _ * _ * _>
          | _ -> failwith "Unsupported tuple size"
       ProvidedSymbolType(Generic tupleType, ts) :> Type
-
+   
+   // Get .NET type from a TS Type
+   // TSType -> Type
    let rec getActualType obtainDef = function
       | Any -> typeof<obj>
       | Boolean -> typeof<bool>
@@ -74,6 +77,7 @@ module TypeGenerator =
 
    type MemberType = Global | Local
 
+   // Create a provided property from a TSVariable
    let genProperty obtainDef memType (var:TSVariable) =
       let name = var.Name
       let prop =
@@ -85,7 +89,8 @@ module TypeGenerator =
       prop.SetterCode <- fun _ -> <@@ failwithf "" @@>
       prop.GetterCode <- fun _ -> <@@ failwithf "" @@>
       prop
-      
+   
+   // Create a provided parameter from a TSParameter
    let genParameter obtainDef (p:TSParameter) =
       let parameter =
          ProvidedParameter(
@@ -96,8 +101,10 @@ module TypeGenerator =
       //parameter.IsParamArray <- p.IsParamArray
       parameter
 
+   // Dictionary of provided types -> god knows?
    let generated = Dictionary<ProvidedTypeDefinition, Set<name * TSType list> ref>()
 
+   // Get set for a particular provided type definition, creating one if it doesn't exist
    let getGeneratedSet t =
       match generated.TryGetValue t with
       | false, _ ->
@@ -106,11 +113,13 @@ module TypeGenerator =
          genSet
       | true, genSet -> genSet
 
-   let genCons t obtainDef memType (f:TSFunction) =
+   // Generate constructor   
+   let genCons t obtainDef (f:TSFunction) =
       let parameters = 
          f.Parameters |> List.map (genParameter obtainDef)
       ProvidedConstructor(parameters, InvokeCode = fun _ -> <@@ failwithf "" @@>)
-
+   
+   // Generate 'MemberInfo' (.NET) methods
    let genMethods t obtainDef memType (f:TSFunction) =
       let name =
          match f.Name with
@@ -203,7 +212,19 @@ module TypeGenerator =
          | DeclareInterface o ->
             let tsT = Interface o.Name
             let t = obtainDef root tsT
-            addMembers t (obtainDef root) Local o.Members            
+            addMembers t (obtainDef root) Local o.Members
+
+//            for st in o.SuperTypes do
+//               let existingMembers = t.GetMembers()
+//
+//               let st' = obtainDef root st
+//               let parentMembers = st'.GetMembers()
+//
+//               for parentMember in parentMembers do
+//                  match existingMembers |> Array.tryFind (fun m -> m.Name = parentMember.Name) with
+//                  | None -> t.AddMember parentMember
+//                  | Some _ -> ()
+
             next()
          | DeclareClass o ->
             let tsT = Class o.Name
@@ -225,7 +246,7 @@ module TypeGenerator =
                      | Method f -> Some f
                      | _ -> None)
                   |> List.maxBy (fun f -> f.Parameters.Length)
-               let cons = genCons t (obtainDef root) Local bestCons
+               let cons = genCons t (obtainDef root) bestCons
                t.AddMember cons
             addMembers t (obtainDef root) Local members        
             next()
