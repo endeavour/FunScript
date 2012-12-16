@@ -30,7 +30,10 @@ let rec private buildRootWalk acc (t:System.Type) =
       | _ -> buildRootWalk (t.Name :: acc) t.DeclaringType
    | _ -> failwith "An IJSMapping interface had no root"
 
-let private removePropertyPrefixes(name:string) =
+let fixOverloads (name:string) = name.Replace("'", "")
+
+let private removePropertyPrefixes name =
+   let name = fixOverloads name
    if name.StartsWith "get_" || name.StartsWith "set_" then 
       name.Substring(4), true
    else name, false
@@ -190,7 +193,7 @@ let private getPropertyField split (compiler:InternalCompiler.ICompiler) (pi:Pro
    compiler.DefineGlobal name (fun var ->
       // TODO: wrap in function scope?
       compiler.DefineGlobalInitialization <|
-         createCall split (ReturnStrategies.assignVar var) compiler [objExpr; exprs] pi.GetMethod
+         createCall split (ReturnStrategies.assignVar var) compiler [objExpr; exprs] (pi.GetGetMethod(true))
       []
    )
 
@@ -206,7 +209,7 @@ let private propertyGetting =
          | true, [], [] ->
             let property = getPropertyField split compiler pi objExpr exprs
             [ returnStategy.Return <| Reference property ]
-         | _ -> createCall split returnStategy compiler [objExpr; exprs] pi.GetMethod
+         | _ -> createCall split returnStategy compiler [objExpr; exprs] (pi.GetGetMethod(true))
       | _ -> []
       
 let private propertySetting =
@@ -223,7 +226,7 @@ let private propertySetting =
             [  yield! valDecl
                yield Assign(Reference property, valRef) 
             ]
-         | _ -> createCall (|Split|) returnStategy compiler [objExpr; exprs; [valExpr]] pi.SetMethod
+         | _ -> createCall (|Split|) returnStategy compiler [objExpr; exprs; [valExpr]] (pi.GetSetMethod(true))
       | _ -> []
 
 let private fieldGetting =
