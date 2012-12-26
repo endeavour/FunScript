@@ -1,6 +1,7 @@
 ﻿module internal FunJS.ReflectedDefinitions
 
 open AST
+open Quote
 open Microsoft.FSharp.Quotations
 open System.Reflection
 open Microsoft.FSharp.Reflection
@@ -18,80 +19,31 @@ let private (|ReflectedDefinition|_|) (mi:MethodBase) =
       | Some _ -> Some(JavaScriptNameMapper.mapMethod mi)
       | _ -> None
 
-let private rootInterfaceName = typeof<IJSRoot>.Name
-let private mappingInterfaceName = typeof<IJSMapping>.Name
-let private conserveMappingInterfaceName = typeof<IJSConservativeMapping>.Name
+let private genMethod (mb:MethodBase) (replacementMi:MethodBase) (vars:Var list) bodyExpr var (compiler:InternalCompiler.ICompiler) =
+   match replacementMi.GetCustomAttribute<JSEmitAttribute>() with
+   | meth when meth <> Unchecked.defaultof<_> ->
+      let code =
+         vars 
+         |> List.mapi (fun i v -> i,v)
+         |> List.fold (fun (acc:string) (i,v) ->
+            acc.Replace(sprintf "{%i}" i, v.Name)
+            ) meth.Emit
+      [ Assign(Reference var, Lambda(vars, EmitBlock code)) ]
+   | _ when mb.IsConstructor ->
+      [  
+         yield Assign(Reference var, Lambda(vars, Block(compiler.Compile ReturnStrategies.inplace bodyExpr)))
+         let methods = compiler |> Objects.genInstanceMethods mb.DeclaringType
+         let proto = PropertyGet(Reference var, "prototype")
+         for name, lambda in methods do
+            yield Assign(PropertyGet(proto, name), lambda)
+      ]
+   | _ -> 
+      [ Assign(
+         Reference var, 
+         Lambda(vars, 
+            Block(compiler.Compile ReturnStrategies.returnFrom bodyExpr))) ] 
 
-let rec private buildRootWalk acc (t:System.Type) =
-   match t with
-   | NonNull t ->
-      match t.GetInterface rootInterfaceName with
-      | NonNull _ -> acc
-      | _ -> buildRootWalk (t.Name :: acc) t.DeclaringType
-   | _ -> failwith "An IJSMapping interface had no root"
-
-let fixOverloads (name:string) = name.Replace("'", "")
-
-let private removePropertyPrefixes name =
-   let name = fixOverloads name
-   if name.StartsWith "get_" || name.StartsWith "set_" then 
-      name.Substring(4), true
-   else name, false
-
-let private (|JSMapping|_|) (mi:MethodBase) = 
-   let mappingInterface = 
-      mi.DeclaringType.GetInterface mappingInterfaceName
-   match mappingInterface with
-   | NonNull _ -> 
-      let name, isProperty = removePropertyPrefixes mi.Name
-      let isStatic = mi.IsStatic
-      if not isStatic then Some (name, isStatic, isProperty)
-      else 
-         let rootWalk = buildRootWalk [] mi.DeclaringType
-         match rootWalk with
-         | [] -> Some (name, isStatic, isProperty)
-         | _ ->
-            let prefix = rootWalk |> String.concat "."
-            Some (sprintf "%s.%s" prefix name, isStatic, isProperty)
-   | _ -> None
-
-
-let private (|JSConservativeMapping|_|) (t:System.Type) =
-   let interfaceDef = t.GetInterface conserveMappingInterfaceName
-   let hasInterface = interfaceDef <> Unchecked.defaultof<_>
-   if hasInterface then
-      let rootWalk = buildRootWalk [] t
-      Some(rootWalk |> String.concat ".")
-   else None
-
-let private (|JSConservativeCtorMapping|_|) (mi:MethodBase) =
-   match mi.DeclaringType with
-   | JSConservativeMapping name -> Some <| name
-   | _  -> None
-
-let private (|JSConservativeMethodMapping|_|) (mi:MethodBase) =
-   match mi.DeclaringType with
-   | JSConservativeMapping name -> Some <| name + "." + mi.Name
-   | _  -> None
-
-let private genMethod (mb:MethodBase) (replacementMi:MethodBase) (vars:Var list) bodyExpr (compiler:InternalCompiler.ICompiler) =
-   let block =
-      match replacementMi.GetCustomAttribute<JSEmitAttribute>() with
-      | meth when meth <> Unchecked.defaultof<_> ->
-         let code =
-            vars 
-            |> List.mapi (fun i v -> i,v)
-            |> List.fold (fun (acc:string) (i,v) ->
-               acc.Replace(sprintf "{%i}" i, v.Name)
-               ) meth.Emit
-         EmitBlock code
-      | _ when mb.IsConstructor ->
-         Block [  
-            yield! compiler.Compile ReturnStrategies.inplace bodyExpr
-            yield! compiler |> Objects.genInstanceMethods mb.DeclaringType
-         ]
-      | _ -> Block(compiler.Compile ReturnStrategies.returnFrom bodyExpr)
-   vars, block
+   
 
 let private replaceIfAvailable (compiler:InternalCompiler.ICompiler) mb callType =
    match compiler.ReplacementFor mb callType with
@@ -100,10 +52,10 @@ let private replaceIfAvailable (compiler:InternalCompiler.ICompiler) mb callType
 
 let private (|CallPattern|_|) = Objects.methodCallPattern
 
-let private createGlobalMethod compiler mb callType =
+let private createGlobalMethod compiler mb callType var =
    match replaceIfAvailable compiler mb callType with
    | CallPattern(vars, bodyExpr) as replacementMi ->
-      genMethod mb replacementMi vars bodyExpr compiler
+      genMethod mb replacementMi vars bodyExpr var compiler
    | _ -> failwithf "No reflected definition for method: %s" mb.Name
 
 let private createConstruction
@@ -119,17 +71,9 @@ let private createConstruction
    match ci with
    | ReflectedDefinition name ->
       let consRef = 
-         compiler.DefineGlobal name (fun var -> 
-            [ Assign(Reference var, Lambda <| createGlobalMethod compiler ci Quote.ConstructorCall) ]
-         )
+         compiler.DefineGlobal name (createGlobalMethod compiler ci Quote.ConstructorCall)
       [ yield! decls |> List.concat
         yield returnStategy.Return <| New(consRef.Name, refs) ]
-   | JSConservativeCtorMapping name ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| New(name, refs) ]
-   | JSMapping(name, false, false) ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| New("Object", []) ]
    | _ -> []
 
 let private (|SpecialOp|_|) = Quote.specialOp
@@ -144,39 +88,19 @@ let private createCall
       exprs 
       |> List.map (fun (Split(valDecl, valRef)) -> valDecl, valRef)
       |> List.unzip
-   match mi, refs with
-   | (JSMapping(name, true, false) as mi), _ ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| Apply(Reference (Var.Global(name, typeof<obj>)), refs) ]
-   | SpecialOp((ReflectedDefinition name) as mi), _
-   | (ReflectedDefinition name as mi), _ ->
+   match mi with
+   | SpecialOp((ReflectedDefinition name) as mi)
+   | (ReflectedDefinition name as mi) ->
       match mi.IsStatic, refs with
       | false, objRef::argRefs ->
          [ yield! decls |> List.concat
            yield returnStategy.Return <| Apply(PropertyGet(objRef, mi.Name), argRefs) ]
       | true, exprs ->
          let methRef = 
-            compiler.DefineGlobal name (fun var -> 
-               [ Assign(Reference var, Lambda <| createGlobalMethod compiler mi Quote.MethodCall) ]
-            )
+            compiler.DefineGlobal name (createGlobalMethod compiler mi Quote.MethodCall)
          [ yield! decls |> List.concat
            yield returnStategy.Return <| Apply(Reference methRef, refs) ]
       | _ -> failwith "never"
-   | JSConservativeMethodMapping name, [] ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| Reference (Var.Global("!!!" + name, typeof<obj>)) ]
-   | JSMapping(name, true, true), [] ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| Reference (Var.Global(name, typeof<obj>)) ]
-   | JSMapping("Invoke", false, false), instance::refs ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| Apply(instance, refs) ]
-   | JSMapping(name, false, false), instance::refs ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| Apply(PropertyGet(instance, name), refs) ]
-   | JSMapping(name, false, true), instance::[] ->
-      [ yield! decls |> List.concat
-        yield returnStategy.Return <| PropertyGet(instance, name) ]
    | _ -> []
 
 let private methodCalling =
@@ -254,15 +178,17 @@ let private fieldSetting =
       | _ -> []
 
 let private objectGuid = typeof<obj>.GUID
+let private objectName = typeof<obj>.FullName
 
 let private constructingInstances =
    CompilerComponent.create <| fun split compiler returnStategy ->
       function
-      | Patterns.NewObject(ci, exprs) -> 
-         if ci.DeclaringType.GUID = objectGuid then
-            [ Scope <| Block [] ]
-         else
-            createConstruction split returnStategy compiler [exprs] ci
+      | PatternsExt.NewObject(ci, exprs) -> 
+         let declaringType = ci.DeclaringType
+         if declaringType.GUID = objectGuid &&
+            declaringType.FullName = objectName 
+         then [ Scope <| Block [] ]
+         else createConstruction split returnStategy compiler [exprs] ci
       | _ -> []
 
 let components = [ 

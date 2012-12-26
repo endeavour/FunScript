@@ -2,19 +2,19 @@
 module FunJS.Tests.Common
 
 open FunJS
-open FsUnit.Xunit
 open Jint
+open NUnit.Framework
 open Linq.QuotationEvaluation
 
 let checkAreEqual expectedResult quote =
    let code = Compiler.compile quote
-   printfn "// Code:\n%s" code
    try
       let engine = JintEngine()
       let result = engine.Run(code + "\nreturn null;")
-      result |> should equal expectedResult
+      Assert.That((result = expectedResult))
    // Wrap xUnit exceptions to stop pauses.
    with ex ->
+      printfn "// Code:\n%s" code
       if ex.GetType().Namespace.StartsWith "FunJS" then raise ex
       else failwithf "Message: %s\n" ex.Message
 

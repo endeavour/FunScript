@@ -11,6 +11,7 @@ let private allComponents =
       Maps.components
       Lists.components
       Strings.components
+      Asyncs.components
       ReflectedDefinitions.components
       Arrays.components
       RecordTypes.components
@@ -66,7 +67,7 @@ type Compiler =
          if defaultArg noReturn false then ReturnStrategies.inplace
          else ReturnStrategies.returnFrom
       let compiler = InternalCompiler.Compiler(allComponents @ components)
-      let program = compiler.Compile ReturnStrategies.returnFrom expression
+      let program = compiler.Compile returnStrat expression
       let reflectedDefs = compiler.Globals
       let block = List.append reflectedDefs program 
       comparerPrototypes + (AST.Block block).Print()
